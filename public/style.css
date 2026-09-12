@@ -126,6 +126,54 @@ html, body {
   text-shadow: 0 0 20px rgba(255, 42, 95, 0.8);
 }
 
+/* Top App Bar Room Badge */
+.top-room-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 210, 255, 0.12);
+  border: 1.5px solid rgba(0, 210, 255, 0.5);
+  box-shadow: 0 0 12px rgba(0, 210, 255, 0.25);
+  padding: 3px 12px;
+  border-radius: 20px;
+}
+
+.top-room-label {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 1.5px;
+  color: var(--accent-cyan);
+  font-weight: 700;
+}
+
+.top-room-code {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: #ffffff;
+  text-shadow: 0 0 8px var(--accent-cyan);
+}
+
+.top-copy-btn {
+  background: var(--accent-cyan);
+  color: #000;
+  border: none;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  font-weight: 900;
+  padding: 3px 9px;
+  border-radius: 12px;
+  cursor: pointer;
+  letter-spacing: 1px;
+  transition: all 0.15s ease;
+}
+
+.top-copy-btn:hover, .top-copy-btn:active {
+  background: #ffffff;
+  box-shadow: 0 0 10px #ffffff;
+}
+
 .header-status {
   display: flex;
   align-items: center;
@@ -521,6 +569,51 @@ html, body {
   font-weight: 700;
 }
 
+.hud-room-badge {
+  background: rgba(0, 210, 255, 0.15);
+  border: 1px solid rgba(0, 210, 255, 0.5);
+  padding: 2px 8px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.room-tag {
+  background: var(--accent-cyan);
+  color: #000;
+  font-size: 0.6rem;
+  font-weight: 900;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.hud-room-code {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #fff;
+  text-shadow: 0 0 6px var(--accent-cyan);
+}
+
+.hud-copy-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 1px 5px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+
+.hud-copy-btn:hover, .hud-copy-btn:active {
+  background: rgba(255, 255, 255, 0.35);
+}
+
 .player-tag {
   font-size: 0.6rem;
   padding: 1px 4px;
@@ -580,13 +673,46 @@ html, body {
   }
 
   .app-header {
-    display: none; /* Hide header in landscape to maximize screen */
+    display: flex;
+    padding: 2px 10px;
+    height: 34px;
+    min-height: 34px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .logo-title {
+    font-size: 0.95rem;
+    letter-spacing: 1px;
+  }
+
+  .top-room-bar {
+    padding: 2px 8px;
+    gap: 5px;
+  }
+
+  .top-room-label {
+    font-size: 0.65rem;
+  }
+
+  .top-room-code {
+    font-size: 0.85rem;
+    letter-spacing: 2px;
+  }
+
+  .top-copy-btn {
+    font-size: 0.6rem;
+    padding: 2px 6px;
+  }
+
+  .header-status {
+    padding: 2px 6px;
+    font-size: 0.7rem;
   }
 
   .screen-frame {
+    flex: 1;
     width: 100vw;
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100dvh - 34px);
     border-radius: 0;
     border: none;
     box-shadow: none;

@@ -34,6 +34,11 @@
       <div class="logo-group">
         <h1 class="logo-title">TEKKEN <span class="accent-num">3</span></h1>
       </div>
+      <div class="top-room-bar" id="topRoomBar" style="display: none;">
+        <span class="top-room-label">ROOM:</span>
+        <span class="top-room-code" id="topRoomCodeVal">----</span>
+        <button class="top-copy-btn" id="btnTopCopyCode" title="Copy Room Invite Link">COPY</button>
+      </div>
       <div class="header-right">
         <div class="header-status" id="headerStatus">
           <span class="status-dot active"></span>
@@ -101,6 +106,11 @@
 
           <!-- Multiplayer Match Indicator -->
           <div class="match-hud" id="matchHud" style="display: none;">
+            <div class="match-badge hud-room-badge" id="hudRoomBadge">
+              <span class="player-tag room-tag">ROOM</span>
+              <span class="hud-room-code" id="hudRoomCodeVal">----</span>
+              <button class="hud-copy-btn" id="btnHudCopyCode" title="Copy Room Invite Link">📋</button>
+            </div>
             <div class="match-badge p1-badge">
               <span class="player-tag">P1</span>
               <span class="player-name" id="p1Name">Host</span>

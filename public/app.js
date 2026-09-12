@@ -63,6 +63,12 @@ const btnTouchToggle = document.getElementById('btnTouchToggle');
 const guestCtx = guestCanvas ? guestCanvas.getContext('2d') : null;
 
 // Multiplayer DOM Elements
+const topRoomBar = document.getElementById('topRoomBar');
+const topRoomCodeVal = document.getElementById('topRoomCodeVal');
+const btnTopCopyCode = document.getElementById('btnTopCopyCode');
+const hudRoomBadge = document.getElementById('hudRoomBadge');
+const hudRoomCodeVal = document.getElementById('hudRoomCodeVal');
+const btnHudCopyCode = document.getElementById('btnHudCopyCode');
 const roomDisplayGroup = document.getElementById('roomDisplayGroup');
 const roomCodeVal = document.getElementById('roomCodeVal');
 const btnCopyInvite = document.getElementById('btnCopyInvite');
@@ -152,14 +158,22 @@ function stopPing() {
   }
 }
 
+function setRoomCode(roomId) {
+  currentRoomId = roomId;
+  if (topRoomBar) topRoomBar.style.display = 'flex';
+  if (topRoomCodeVal) topRoomCodeVal.textContent = roomId;
+  if (hudRoomBadge) hudRoomBadge.style.display = 'flex';
+  if (hudRoomCodeVal) hudRoomCodeVal.textContent = roomId;
+  if (roomCodeVal) roomCodeVal.textContent = roomId;
+  if (roomDisplayGroup) roomDisplayGroup.style.display = 'flex';
+}
+
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'room_created':
-      currentRoomId = msg.roomId;
+      setRoomCode(msg.roomId);
       isHost = true;
       isGuest = false;
-      roomCodeVal.textContent = msg.roomId;
-      roomDisplayGroup.style.display = 'flex';
       p1Name.textContent = 'Host (You)';
       p2Name.textContent = 'Waiting...';
       matchHud.style.display = 'flex';
@@ -177,7 +191,7 @@ function handleWsMessage(msg) {
       break;
 
     case 'room_joined':
-      currentRoomId = msg.roomId;
+      setRoomCode(msg.roomId);
       isHost = false;
       isGuest = true;
       screenOverlay.classList.add('hidden');
@@ -756,16 +770,26 @@ txtRoomCode.addEventListener('keyup', (e) => {
   if (e.key === 'Enter') btnJoinRoom.click();
 });
 
-btnCopyInvite.addEventListener('click', () => {
+function copyRoomInvite(btnEl, defaultLabel) {
   if (!currentRoomId) return;
   const inviteUrl = `${window.location.origin}?room=${currentRoomId}`;
   navigator.clipboard.writeText(inviteUrl).then(() => {
-    btnCopyInvite.textContent = 'Copied!';
-    setTimeout(() => { btnCopyInvite.textContent = 'Copy Link'; }, 2000);
+    btnEl.textContent = 'COPIED!';
+    setTimeout(() => { btnEl.textContent = defaultLabel; }, 2000);
   }).catch(() => {
-    prompt('Invite Link:', inviteUrl);
+    prompt('Room Code: ' + currentRoomId + '\nInvite Link:', inviteUrl);
   });
-});
+}
+
+if (btnTopCopyCode) {
+  btnTopCopyCode.addEventListener('click', () => copyRoomInvite(btnTopCopyCode, 'COPY'));
+}
+if (btnHudCopyCode) {
+  btnHudCopyCode.addEventListener('click', () => copyRoomInvite(btnHudCopyCode, '📋'));
+}
+if (btnCopyInvite) {
+  btnCopyInvite.addEventListener('click', () => copyRoomInvite(btnCopyInvite, 'Copy Link'));
+}
 
 btnPause.addEventListener('click', async () => {
   if (!nostalgistInstance) return;

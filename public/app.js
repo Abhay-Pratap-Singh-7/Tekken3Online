@@ -111,8 +111,8 @@ function initWebSocket() {
     // Binary Live Frame Relay (Direct Canvas over WS)
     if (e.data instanceof Blob || e.data instanceof ArrayBuffer) {
       if (isGuest && guestCanvas && guestCtx) {
-        // If WebRTC hardware video is actively streaming, skip decoding fallback frame
-        if (guestVideo && guestVideo.style.display === 'block' && !guestVideo.paused) {
+        // If WebRTC video is actively playing real video frames, skip canvas draw
+        if (guestVideo && guestVideo.style.display === 'block' && guestVideo.videoWidth > 0 && !guestVideo.paused) {
           return;
         }
 
@@ -123,13 +123,11 @@ function initWebSocket() {
             guestCanvas.height = bmp.height;
           }
           guestCtx.drawImage(bmp, 0, 0);
-          bmp.close(); // Prevent GPU VRAM leak on mobile
+          bmp.close();
 
           screenOverlay.classList.add('hidden');
           canvas.style.display = 'none';
-          if (guestVideo.style.display !== 'block') {
-            guestCanvas.style.display = 'block';
-          }
+          guestCanvas.style.display = 'block';
         }).catch(() => {});
       }
       return;
@@ -286,28 +284,28 @@ function startHostFrameStreaming() {
   if (frameStreamLoopActive) return;
   frameStreamLoopActive = true;
 
+  let inFlight = false;
+
   function streamLoop() {
     if (!frameStreamLoopActive || !isHost) return;
 
-    // Pause CPU-heavy JPEG loop if WebRTC hardware video is connected and streaming at 60 FPS
-    if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.connectionState === 'connected')) {
-      setTimeout(streamLoop, 1000);
-      return;
-    }
+    const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
 
-    if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536 && canvas && canvas.width > 0) {
-      canvas.toBlob((blob) => {
-        if (blob && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
+    if (!inFlight && ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 131072 && activeCanvas && activeCanvas.width > 0) {
+      inFlight = true;
+      activeCanvas.toBlob((blob) => {
+        inFlight = false;
+        if (blob && blob.size > 0 && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
           ws.send(blob);
         }
-        setTimeout(streamLoop, 33);
-      }, 'image/jpeg', 0.55);
+        requestAnimationFrame(streamLoop);
+      }, 'image/jpeg', 0.65);
     } else {
-      setTimeout(streamLoop, 40);
+      setTimeout(streamLoop, 16);
     }
   }
 
-  streamLoop();
+  requestAnimationFrame(streamLoop);
 }
 
 async function startWebRtcAsHost() {
@@ -321,16 +319,9 @@ async function startWebRtcAsHost() {
     }
   };
 
-  peerConnection.oniceconnectionstatechange = () => {
-    if (peerConnection.iceConnectionState === 'connected') {
-      frameStreamLoopActive = false; // Stop CPU-heavy JPEG fallback while WebRTC is running!
-    } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
-      startHostFrameStreaming(); // Resume fallback if WebRTC drops
-    }
-  };
-
   try {
-    const canvasStream = canvas.captureStream(60);
+    const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
+    const canvasStream = activeCanvas.captureStream(60);
     canvasStream.getVideoTracks().forEach(track => {
       const sender = peerConnection.addTrack(track, canvasStream);
       try {
@@ -371,10 +362,14 @@ function initWebRtcAsGuest() {
   peerConnection.ontrack = (e) => {
     if (e.streams && e.streams[0]) {
       guestVideo.srcObject = e.streams[0];
-      guestVideo.play().then(() => {
-        guestVideo.style.display = 'block';
-        guestCanvas.style.display = 'none';
-      }).catch(() => {});
+      guestVideo.onloadedmetadata = () => {
+        guestVideo.play().then(() => {
+          if (guestVideo.videoWidth > 0 && guestVideo.videoHeight > 0) {
+            guestVideo.style.display = 'block';
+            guestCanvas.style.display = 'none';
+          }
+        }).catch(() => {});
+      };
     }
   };
 }
@@ -884,7 +879,7 @@ async function startEmulator(rom, bios) {
 function joinRoom(roomId) {
   if (!roomId) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    alert('Connecting...');
+    setTimeout(() => joinRoom(roomId), 400);
     return;
   }
   ws.send(JSON.stringify({ type: 'join_room', roomId }));

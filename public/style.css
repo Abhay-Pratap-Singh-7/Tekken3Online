@@ -256,13 +256,20 @@ html, body {
 
 :fullscreen .app-header,
 :-webkit-full-screen .app-header {
-  display: none !important;
+  display: flex !important;
+}
+
+:fullscreen .app-container,
+:-webkit-full-screen .app-container {
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
 }
 
 :fullscreen .screen-frame,
 :-webkit-full-screen .screen-frame {
-  height: 100vh !important;
-  height: 100dvh !important;
+  flex: 1 !important;
+  height: auto !important;
   width: 100vw !important;
 }
 

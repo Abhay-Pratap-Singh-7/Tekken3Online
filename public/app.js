@@ -198,6 +198,7 @@ function setRoomCode(roomId) {
   if (hudRoomCodeVal) hudRoomCodeVal.textContent = roomId;
   if (roomCodeVal) roomCodeVal.textContent = roomId;
   if (roomDisplayGroup) roomDisplayGroup.style.display = 'flex';
+  if (matchHud) matchHud.style.display = 'flex';
 }
 
 function handleWsMessage(msg) {
@@ -796,11 +797,8 @@ async function launchGame(asHost = false) {
     }
 
     // 4. Host Room
-    if (asHost) {
-      isHost = true;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'create_room' }));
-      }
+    if (asHost && !currentRoomId) {
+      requestHostRoom();
     }
 
     progressStepText.textContent = 'Booting...';
@@ -910,7 +908,17 @@ btnLaunchDetected.addEventListener('click', () => {
   launchGame(false);
 });
 
+function requestHostRoom() {
+  isHost = true;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'create_room' }));
+  } else {
+    setTimeout(requestHostRoom, 200);
+  }
+}
+
 btnHostMatch.addEventListener('click', () => {
+  requestHostRoom();
   enterAutoFullscreen();
   requestLandscapeOrientation();
   launchGame(true);

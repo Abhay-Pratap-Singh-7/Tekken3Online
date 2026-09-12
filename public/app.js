@@ -526,7 +526,63 @@ function setupGuestKeyboardListeners() {
 }
 
 // ==========================================
-// 4. ROM & EMULATOR INITIALIZATION
+// 4. CLIENT-SIDE LOCAL STORAGE (IndexedDB)
+// ==========================================
+const IDB_NAME = 'tekken3_local_cache';
+const IDB_VERSION = 1;
+const IDB_STORE = 'rom_blobs';
+
+function openRomDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      return reject(new Error('IndexedDB not supported'));
+    }
+    const request = indexedDB.open(IDB_NAME, IDB_VERSION);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getStoredAsset(key) {
+  try {
+    const db = await openRomDatabase();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (err) {
+    console.warn('[Storage] Read error:', err);
+    return null;
+  }
+}
+
+async function saveStoredAsset(key, data) {
+  try {
+    const db = await openRomDatabase();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.put(data, key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    });
+  } catch (err) {
+    console.warn('[Storage] Write error:', err);
+    return false;
+  }
+}
+
+// ==========================================
+// 5. ROM & EMULATOR INITIALIZATION
 // ==========================================
 async function checkRomStatus() {
   try {
@@ -535,7 +591,16 @@ async function checkRomStatus() {
     detectedRomInfo = info;
 
     if (info.found && info.tracks.length > 0) {
-      statusPillText.textContent = info.isOptimized ? '32MB Ready' : 'Ready';
+      const track1 = info.tracks.find(t => t.name.includes('Track 1')) || info.tracks[0];
+      const trackKey = track1.originalName || track1.name;
+      const cached = await getStoredAsset(trackKey);
+
+      if (cached) {
+        statusPillText.textContent = 'Cached Locally';
+        statusPillText.style.color = 'var(--accent-green)';
+      } else {
+        statusPillText.textContent = info.isOptimized ? '32MB Ready' : 'Ready';
+      }
       btnLaunchDetected.disabled = false;
       btnHostMatch.disabled = false;
     } else {
@@ -589,63 +654,81 @@ async function launchGame(asHost = false) {
   try {
     const romFiles = [];
 
-    // 1. Cue File
+    // 1. Cue File (check cache first)
     if (detectedRomInfo.cue) {
-      progressStepText.textContent = 'Loading CUE...';
-      const cueRes = await fetch(`/roms/${encodeURIComponent(detectedRomInfo.cue.name)}`);
-      const cueText = await cueRes.text();
+      let cueText = await getStoredAsset(detectedRomInfo.cue.name);
+      if (!cueText) {
+        progressStepText.textContent = 'Loading CUE...';
+        const cueRes = await fetch(`/roms/${encodeURIComponent(detectedRomInfo.cue.name)}`);
+        cueText = await cueRes.text();
+        await saveStoredAsset(detectedRomInfo.cue.name, cueText);
+      }
       romFiles.push({
         fileName: detectedRomInfo.cue.name,
         fileContent: cueText
       });
     }
 
-    // 2. Track 1 (Gameplay)
+    // 2. Track 1 (Gameplay .bin - check local storage cache first)
     const track1 = detectedRomInfo.tracks.find(t => t.name.includes('Track 1')) || detectedRomInfo.tracks[0];
-    let finalTrack1Blob;
+    const trackKey = track1.originalName || track1.name;
+    let finalTrack1Blob = await getStoredAsset(trackKey);
 
-    if (track1.isGz) {
-      progressStepText.textContent = `Downloading (${formatBytes(track1.size)})...`;
-      
-      const compressedBlob = await fetchWithProgress(
-        `/roms/${encodeURIComponent(track1.name)}`,
-        track1.size,
-        (loaded, total) => {
-          const pct = Math.round((loaded / total) * 100);
-          progressBarFill.style.width = `${pct}%`;
-          progressPercent.textContent = `${pct}%`;
-        }
-      );
-
-      progressStepText.textContent = 'Decompressing...';
+    if (finalTrack1Blob) {
+      progressStepText.textContent = 'Loaded from local storage!';
       progressBarFill.style.width = '100%';
-      progressPercent.textContent = 'Almost ready';
-
-      const decompressedStream = compressedBlob.stream().pipeThrough(new DecompressionStream('gzip'));
-      finalTrack1Blob = await new Response(decompressedStream).blob();
+      progressPercent.textContent = '100%';
     } else {
-      progressStepText.textContent = `Loading...`;
-      finalTrack1Blob = await fetchWithProgress(
-        `/roms/${encodeURIComponent(track1.name)}`,
-        track1.size,
-        (loaded, total) => {
-          const pct = Math.round((loaded / total) * 100);
-          progressBarFill.style.width = `${pct}%`;
-          progressPercent.textContent = `${pct}%`;
-        }
-      );
+      if (track1.isGz) {
+        progressStepText.textContent = `Downloading (${formatBytes(track1.size)})...`;
+        
+        const compressedBlob = await fetchWithProgress(
+          `/roms/${encodeURIComponent(track1.name)}`,
+          track1.size,
+          (loaded, total) => {
+            const pct = Math.round((loaded / total) * 100);
+            progressBarFill.style.width = `${pct}%`;
+            progressPercent.textContent = `${pct}%`;
+          }
+        );
+
+        progressStepText.textContent = 'Decompressing...';
+        progressBarFill.style.width = '100%';
+        progressPercent.textContent = 'Almost ready';
+
+        const decompressedStream = compressedBlob.stream().pipeThrough(new DecompressionStream('gzip'));
+        finalTrack1Blob = await new Response(decompressedStream).blob();
+      } else {
+        progressStepText.textContent = `Loading...`;
+        finalTrack1Blob = await fetchWithProgress(
+          `/roms/${encodeURIComponent(track1.name)}`,
+          track1.size,
+          (loaded, total) => {
+            const pct = Math.round((loaded / total) * 100);
+            progressBarFill.style.width = `${pct}%`;
+            progressPercent.textContent = `${pct}%`;
+          }
+        );
+      }
+
+      progressStepText.textContent = 'Saving to local storage...';
+      await saveStoredAsset(trackKey, finalTrack1Blob);
     }
 
     romFiles.push({
-      fileName: track1.originalName || track1.name,
+      fileName: trackKey,
       fileContent: finalTrack1Blob
     });
 
-    // 3. BIOS
+    // 3. BIOS (check cache first)
     const biosFiles = [];
     const biosFile = detectedRomInfo.bios.find(b => b.name === 'scph5501.bin') || detectedRomInfo.bios[0];
     if (biosFile) {
-      const biosBlob = await (await fetch(`/bios/${encodeURIComponent(biosFile.name)}`)).blob();
+      let biosBlob = await getStoredAsset(biosFile.name);
+      if (!biosBlob) {
+        biosBlob = await (await fetch(`/bios/${encodeURIComponent(biosFile.name)}`)).blob();
+        await saveStoredAsset(biosFile.name, biosBlob);
+      }
       biosFiles.push({
         fileName: biosFile.name,
         fileContent: biosBlob

@@ -131,18 +131,26 @@ function streamFile(filePath, req, res, contentType = 'application/octet-stream'
         return;
       }
 
+      const isImmutable = /\.(bin|gz|wasm|cue)$/i.test(filePath) || filePath.includes('/core/') || filePath.includes('/roms/') || filePath.includes('/bios/');
+      const cacheControl = isImmutable ? 'public, max-age=31536000, immutable' : 'no-cache';
+
       const chunksize = end - start + 1;
       const stream = fs.createReadStream(filePath, { start, end });
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${stats.size}`,
         'Content-Length': chunksize,
-        'Content-Type': contentType
+        'Content-Type': contentType,
+        'Cache-Control': cacheControl
       });
       stream.pipe(res);
     } else {
+      const isImmutable = /\.(bin|gz|wasm|cue)$/i.test(filePath) || filePath.includes('/core/') || filePath.includes('/roms/') || filePath.includes('/bios/');
+      const cacheControl = isImmutable ? 'public, max-age=31536000, immutable' : 'no-cache';
+
       res.writeHead(200, {
         'Content-Length': stats.size,
-        'Content-Type': contentType
+        'Content-Type': contentType,
+        'Cache-Control': cacheControl
       });
       fs.createReadStream(filePath).pipe(res);
     }

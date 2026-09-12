@@ -285,24 +285,28 @@ function startHostFrameStreaming() {
   frameStreamLoopActive = true;
 
   let inFlight = false;
+  let lastFrameTime = 0;
+  const targetFrameInterval = 1000 / 30; // 30 FPS cap (~33.3ms)
 
-  function streamLoop() {
+  function streamLoop(timestamp) {
     if (!frameStreamLoopActive || !isHost) return;
 
     const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
 
-    if (!inFlight && ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 131072 && activeCanvas && activeCanvas.width > 0) {
-      inFlight = true;
-      activeCanvas.toBlob((blob) => {
-        inFlight = false;
-        if (blob && blob.size > 0 && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
-          ws.send(blob);
-        }
-        requestAnimationFrame(streamLoop);
-      }, 'image/jpeg', 0.65);
-    } else {
-      setTimeout(streamLoop, 16);
+    if (timestamp - lastFrameTime >= targetFrameInterval) {
+      if (!inFlight && ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 131072 && activeCanvas && activeCanvas.width > 0) {
+        inFlight = true;
+        lastFrameTime = timestamp;
+        activeCanvas.toBlob((blob) => {
+          inFlight = false;
+          if (blob && blob.size > 0 && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
+            ws.send(blob);
+          }
+        }, 'image/jpeg', 0.65);
+      }
     }
+
+    requestAnimationFrame(streamLoop);
   }
 
   requestAnimationFrame(streamLoop);
@@ -321,14 +325,14 @@ async function startWebRtcAsHost() {
 
   try {
     const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
-    const canvasStream = activeCanvas.captureStream(60);
+    const canvasStream = activeCanvas.captureStream(30); // 30 FPS cap
     canvasStream.getVideoTracks().forEach(track => {
       const sender = peerConnection.addTrack(track, canvasStream);
       try {
         const params = sender.getParameters();
         if (!params.encodings) params.encodings = [{}];
-        params.encodings[0].maxBitrate = 2500000;
-        params.encodings[0].maxFramerate = 60;
+        params.encodings[0].maxBitrate = 1800000;
+        params.encodings[0].maxFramerate = 30; // 30 FPS cap
         sender.setParameters(params).catch(() => {});
       } catch (e) {}
     });
@@ -833,9 +837,13 @@ async function startEmulator(rom, bios) {
       audio_enable: true,
       audio_sync: false,
       audio_latency: 64,
-      video_vsync: false,
+      video_vsync: true,
+      video_swap_interval: 2,
+      video_refresh_rate: 30.0,
+      video_target_refresh_rate: 30.0,
       video_smooth: false,
       video_threaded: true,
+      fps_update_interval: 30,
       input_player1_analog_dpad_mode: 1,
       input_player2_analog_dpad_mode: 1,
 
@@ -857,7 +865,7 @@ async function startEmulator(rom, bios) {
     retroarchCoreConfig: {
       pcsx_rearmed_spu_interpolation: 'simple',
       pcsx_rearmed_dithering: 'disabled',
-      pcsx_rearmed_frameskip: '0'
+      pcsx_rearmed_frameskip: '1'
     }
   };
 

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Tekken 3 Online</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+  <script>
+    const _origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type, attributes) {
+      if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
+        attributes = attributes || {};
+        attributes.preserveDrawingBuffer = true;
+      }
+      return _origGetContext.call(this, type, attributes);
+    };
+  </script>
+</head>
+<body>
+  <!-- Rotate Device Prompt (Mobile Portrait) -->
+  <div class="rotate-prompt" id="rotatePrompt">
+    <div class="rotate-box">
+      <div class="rotate-phone-icon">📱 ↷</div>
+      <div class="rotate-title">ROTATE TO LANDSCAPE</div>
+    </div>
+  </div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-group">
+        <h1 class="logo-title">TEKKEN <span class="accent-num">3</span></h1>
+      </div>
+      <div class="header-right">
+        <div class="header-status" id="headerStatus">
+          <span class="status-dot active"></span>
+          <span class="status-text" id="statusPillText">Ready</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Layout -->
+    <main class="main-layout">
+      <!-- Emulator Screen View -->
+      <section class="emulator-section">
+        <div class="screen-frame" id="screenFrame">
+          <!-- Canvas & Video -->
+          <div id="canvas-container">
+            <canvas id="emulator-canvas" class="emulator-canvas" tabindex="1"></canvas>
+            <canvas id="guest-canvas" class="guest-canvas" style="display: none;"></canvas>
+            <video id="guest-video" class="guest-video" autoplay playsinline muted style="display: none;"></video>
+
+            <!-- Touch Controls Overlay for Mobile & Tablet -->
+            <div class="touch-overlay" id="touchOverlay">
+              <!-- Top Row: L1, Select, Start, R1 -->
+              <div class="touch-top-bar">
+                <button class="t-btn t-shoulder" data-btn="l">L1</button>
+                <div class="touch-meta-group">
+                  <button class="t-btn t-meta" data-btn="select">SELECT</button>
+                  <button class="t-btn t-meta" data-btn="start">START</button>
+                </div>
+                <button class="t-btn t-shoulder" data-btn="r">R1</button>
+              </div>
+
+              <!-- Bottom Row: D-Pad & Actions -->
+              <div class="touch-bottom-bar">
+                <!-- 8-Way Directional D-Pad -->
+                <div class="touch-dpad">
+                  <div class="t-dpad-row">
+                    <button class="t-btn t-dpad-dir t-diag" data-btn="up,left">↖</button>
+                    <button class="t-btn t-dpad-dir" data-btn="up">▲</button>
+                    <button class="t-btn t-dpad-dir t-diag" data-btn="up,right">↗</button>
+                  </div>
+                  <div class="t-dpad-row">
+                    <button class="t-btn t-dpad-dir" data-btn="left">◀</button>
+                    <div class="t-dpad-center"></div>
+                    <button class="t-btn t-dpad-dir" data-btn="right">▶</button>
+                  </div>
+                  <div class="t-dpad-row">
+                    <button class="t-btn t-dpad-dir t-diag" data-btn="down,left">↙</button>
+                    <button class="t-btn t-dpad-dir" data-btn="down">▼</button>
+                    <button class="t-btn t-dpad-dir t-diag" data-btn="down,right">↘</button>
+                  </div>
+                </div>
+
+                <!-- Tekken 4 Action Buttons -->
+                <div class="touch-actions">
+                  <button class="t-btn t-action t-triangle" data-btn="x">△</button>
+                  <div class="t-actions-mid">
+                    <button class="t-btn t-action t-square" data-btn="y">□</button>
+                    <button class="t-btn t-action t-circle" data-btn="a">○</button>
+                  </div>
+                  <button class="t-btn t-action t-cross" data-btn="b">✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Multiplayer Match Indicator -->
+          <div class="match-hud" id="matchHud" style="display: none;">
+            <div class="match-badge p1-badge">
+              <span class="player-tag">P1</span>
+              <span class="player-name" id="p1Name">Host</span>
+            </div>
+            <div class="vs-text">VS</div>
+            <div class="match-badge p2-badge">
+              <span class="player-tag">P2</span>
+              <span class="player-name" id="p2Name">Waiting...</span>
+            </div>
+            <div class="ping-badge" id="pingBadge" style="display: none;">
+              <span class="ping-dot"></span>
+              <span id="pingVal">-- ms</span>
+            </div>
+          </div>
+
+          <!-- Pre-launch Overlay -->
+          <div class="screen-overlay" id="screenOverlay">
+            <div class="overlay-content">
+              <div class="flame-glow"></div>
+              <h2 class="arcade-heading">TEKKEN 3</h2>
+
+              <!-- Progress Bar -->
+              <div class="progress-wrapper" id="progressWrapper" style="display: none;">
+                <div class="progress-bar-bg">
+                  <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+                <div class="progress-labels">
+                  <span id="progressStepText">Loading...</span>
+                  <span id="progressPercent">0%</span>
+                </div>
+              </div>
+
+              <!-- Main Launch Buttons -->
+              <div class="action-buttons-group">
+                <button class="btn btn-primary" id="btnLaunchDetected">
+                  <span class="btn-icon">▶</span>
+                  <span class="btn-text">PLAY SOLO</span>
+                </button>
+                <button class="btn btn-online-host" id="btnHostMatch">
+                  <span class="btn-icon">🌐</span>
+                  <span class="btn-text">HOST ONLINE (P1)</span>
+                </button>
+              </div>
+
+              <!-- Join Room Form -->
+              <div class="join-room-inline">
+                <input type="text" id="txtRoomCode" placeholder="ROOM CODE" maxlength="8" autocomplete="off" autocapitalize="characters">
+                <button class="btn btn-join" id="btnJoinRoom">JOIN (P2)</button>
+              </div>
+
+              <div class="room-display-group" id="roomDisplayGroup" style="display: none;">
+                <span class="room-label">ROOM:</span>
+                <div class="room-code-badge" id="roomCodeVal">----</div>
+                <button class="btn btn-sm btn-copy" id="btnCopyInvite">Copy Link</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- In-game Controls Bar -->
+        <div class="game-hud" id="gameHud" style="display: none;">
+          <div class="hud-left">
+            <button class="hud-btn" id="btnPause">⏸ Pause</button>
+            <button class="hud-btn" id="btnRestart">🔄 Reset</button>
+          </div>
+          <div class="hud-center">
+            <button class="hud-btn" id="btnTouchToggle">🎮 Touch: ON</button>
+            <button class="hud-btn" id="btnSaveState">💾 Save</button>
+            <button class="hud-btn" id="btnLoadState">📂 Load</button>
+          </div>
+          <div class="hud-right">
+            <button class="hud-btn btn-fullscreen" id="btnFullscreen">⛶ Fullscreen</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Audio Context Interceptor for WebRTC Audio Streaming -->
+  <script>
+    window.__capturedAudioStreams = [];
+    const _OrigAC = window.AudioContext || window.webkitAudioContext;
+    if (_OrigAC) {
+      window.AudioContext = class extends _OrigAC {
+        constructor(...args) {
+          super(...args);
+          try {
+            const dest = this.createMediaStreamDestination();
+            this.__customDest = dest;
+            const origConnect = AudioNode.prototype.connect;
+            AudioNode.prototype.connect = function(target, ...rest) {
+              if (target === this.context.destination && this.context.__customDest) {
+                try { origConnect.call(this, this.context.__customDest); } catch(e) {}
+              }
+              return origConnect.call(this, target, ...rest);
+            };
+            window.__capturedAudioStreams.push(dest.stream);
+          } catch(e) {}
+        }
+      };
+    }
+  </script>
+
+  <!-- Nostalgist.js core engine -->
+  <script src="vendor/nostalgist.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

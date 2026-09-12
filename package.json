@@ -1,0 +1,20 @@
+{
+  "name": "tekken3-online",
+  "version": "1.0.0",
+  "description": "Play Tekken 3 directly in your web browser via WebAssembly PCSX-ReARMed emulator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "tekken3",
+    "psx",
+    "retroarch",
+    "webassembly"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

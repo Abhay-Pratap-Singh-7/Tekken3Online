@@ -14,6 +14,9 @@
       if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
         attributes = attributes || {};
         attributes.preserveDrawingBuffer = true;
+        attributes.powerPreference = 'high-performance';
+        attributes.antialias = false;
+        attributes.desynchronized = true;
       }
       return _origGetContext.call(this, type, attributes);
     };

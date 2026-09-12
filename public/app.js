@@ -111,6 +111,11 @@ function initWebSocket() {
     // Binary Live Frame Relay (Direct Canvas over WS)
     if (e.data instanceof Blob || e.data instanceof ArrayBuffer) {
       if (isGuest && guestCanvas && guestCtx) {
+        // If WebRTC hardware video is actively streaming, skip decoding fallback frame
+        if (guestVideo && guestVideo.style.display === 'block' && !guestVideo.paused) {
+          return;
+        }
+
         const blob = e.data instanceof Blob ? e.data : new Blob([e.data], { type: 'image/jpeg' });
         createImageBitmap(blob).then(bmp => {
           if (guestCanvas.width !== bmp.width || guestCanvas.height !== bmp.height) {
@@ -118,6 +123,8 @@ function initWebSocket() {
             guestCanvas.height = bmp.height;
           }
           guestCtx.drawImage(bmp, 0, 0);
+          bmp.close(); // Prevent GPU VRAM leak on mobile
+
           screenOverlay.classList.add('hidden');
           canvas.style.display = 'none';
           if (guestVideo.style.display !== 'block') {
@@ -158,6 +165,33 @@ function stopPing() {
   }
 }
 
+function enterAutoFullscreen() {
+  const isMobile = /Android|iPhone|iPad|iPod|webOS|Windows Phone/i.test(navigator.userAgent) || 
+                   (window.innerWidth <= 1024 && ('ontouchstart' in window || navigator.maxTouchPoints > 0));
+  if (!isMobile) return;
+
+  const target = document.documentElement;
+  const reqFs = target.requestFullscreen || 
+                target.webkitRequestFullscreen || 
+                target.mozRequestFullScreen || 
+                target.msRequestFullscreen;
+
+  if (reqFs && !document.fullscreenElement && !document.webkitFullscreenElement) {
+    reqFs.call(target).catch(() => {
+      const retryOnTouch = () => {
+        const fn = target.requestFullscreen || target.webkitRequestFullscreen;
+        if (fn && !document.fullscreenElement && !document.webkitFullscreenElement) {
+          fn.call(target).catch(() => {});
+        }
+        window.removeEventListener('touchstart', retryOnTouch);
+        window.removeEventListener('touchend', retryOnTouch);
+      };
+      window.addEventListener('touchstart', retryOnTouch, { once: true, passive: true });
+      window.addEventListener('touchend', retryOnTouch, { once: true, passive: true });
+    });
+  }
+}
+
 function setRoomCode(roomId) {
   currentRoomId = roomId;
   if (topRoomBar) topRoomBar.style.display = 'flex';
@@ -184,6 +218,7 @@ function handleWsMessage(msg) {
       p2Name.textContent = 'P2 (Connected)';
       p2Name.style.color = 'var(--accent-cyan)';
       pingBadge.style.display = 'flex';
+      enterAutoFullscreen();
       if (isHost && nostalgistInstance) {
         startHostFrameStreaming();
         startWebRtcAsHost();
@@ -194,6 +229,7 @@ function handleWsMessage(msg) {
       setRoomCode(msg.roomId);
       isHost = false;
       isGuest = true;
+      enterAutoFullscreen();
       screenOverlay.classList.add('hidden');
       canvas.style.display = 'none';
       guestCanvas.style.display = 'block';
@@ -252,15 +288,22 @@ function startHostFrameStreaming() {
 
   function streamLoop() {
     if (!frameStreamLoopActive || !isHost) return;
-    if (ws && ws.readyState === WebSocket.OPEN && canvas && canvas.width > 0) {
+
+    // Pause CPU-heavy JPEG loop if WebRTC hardware video is connected and streaming at 60 FPS
+    if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.connectionState === 'connected')) {
+      setTimeout(streamLoop, 1000);
+      return;
+    }
+
+    if (ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536 && canvas && canvas.width > 0) {
       canvas.toBlob((blob) => {
         if (blob && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
           ws.send(blob);
         }
         setTimeout(streamLoop, 33);
-      }, 'image/jpeg', 0.65);
+      }, 'image/jpeg', 0.55);
     } else {
-      setTimeout(streamLoop, 100);
+      setTimeout(streamLoop, 40);
     }
   }
 
@@ -278,10 +321,25 @@ async function startWebRtcAsHost() {
     }
   };
 
+  peerConnection.oniceconnectionstatechange = () => {
+    if (peerConnection.iceConnectionState === 'connected') {
+      frameStreamLoopActive = false; // Stop CPU-heavy JPEG fallback while WebRTC is running!
+    } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
+      startHostFrameStreaming(); // Resume fallback if WebRTC drops
+    }
+  };
+
   try {
     const canvasStream = canvas.captureStream(60);
     canvasStream.getVideoTracks().forEach(track => {
-      peerConnection.addTrack(track, canvasStream);
+      const sender = peerConnection.addTrack(track, canvasStream);
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 2500000;
+        params.encodings[0].maxFramerate = 60;
+        sender.setParameters(params).catch(() => {});
+      } catch (e) {}
     });
 
     if (window.__capturedAudioStreams && window.__capturedAudioStreams.length > 0) {
@@ -441,7 +499,10 @@ function setupTouchOverlay() {
   }
 
   // Handle touch drag across buttons
-  touchOverlay.addEventListener('touchstart', updateTouchPoints, { passive: false });
+  touchOverlay.addEventListener('touchstart', (e) => {
+    enterAutoFullscreen();
+    updateTouchPoints(e);
+  }, { passive: false });
   touchOverlay.addEventListener('touchmove', updateTouchPoints, { passive: false });
   touchOverlay.addEventListener('touchend', updateTouchPoints, { passive: false });
   touchOverlay.addEventListener('touchcancel', updateTouchPoints, { passive: false });
@@ -775,9 +836,11 @@ async function startEmulator(rom, bios) {
     rom: rom,
     retroarchConfig: {
       audio_enable: true,
-      audio_sync: true,
-      video_vsync: true,
-      video_smooth: true,
+      audio_sync: false,
+      audio_latency: 64,
+      video_vsync: false,
+      video_smooth: false,
+      video_threaded: true,
       input_player1_analog_dpad_mode: 1,
       input_player2_analog_dpad_mode: 1,
 
@@ -795,6 +858,11 @@ async function startEmulator(rom, bios) {
       input_player2_r2: 'm',      // R2
       input_player2_start: 'num1',
       input_player2_select: 'num0'
+    },
+    retroarchCoreConfig: {
+      pcsx_rearmed_spu_interpolation: 'simple',
+      pcsx_rearmed_dithering: 'disabled',
+      pcsx_rearmed_frameskip: '0'
     }
   };
 
@@ -834,16 +902,19 @@ function requestLandscapeOrientation() {
 // 5. EVENT LISTENERS
 // ==========================================
 btnLaunchDetected.addEventListener('click', () => {
+  enterAutoFullscreen();
   requestLandscapeOrientation();
   launchGame(false);
 });
 
 btnHostMatch.addEventListener('click', () => {
+  enterAutoFullscreen();
   requestLandscapeOrientation();
   launchGame(true);
 });
 
 btnJoinRoom.addEventListener('click', () => {
+  enterAutoFullscreen();
   requestLandscapeOrientation();
   const code = txtRoomCode.value.trim().toUpperCase();
   if (code) joinRoom(code);

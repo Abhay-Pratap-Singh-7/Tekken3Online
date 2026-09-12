@@ -246,6 +246,24 @@ html, body {
   display: block;
   outline: none;
   background: #000;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+:fullscreen .app-header,
+:-webkit-full-screen .app-header {
+  display: none !important;
+}
+
+:fullscreen .screen-frame,
+:-webkit-full-screen .screen-frame {
+  height: 100vh !important;
+  height: 100dvh !important;
+  width: 100vw !important;
 }
 
 /* Touch Overlay */

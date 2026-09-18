@@ -213,8 +213,15 @@ const server = http.createServer((req, res) => {
   streamFile(filePath, req, res, mime);
 });
 
+server.on('connection', (socket) => {
+  socket.setNoDelay(true);
+});
+
 // WebSocket Server for Online Multiplayer / Netplay
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  perMessageDeflate: false // Disable per-message deflate compression overhead for ultra-low latency small packets
+});
 const rooms = new Map(); // roomId -> { host: ws, guest: ws }
 
 function generateRoomCode() {
@@ -226,7 +233,9 @@ function generateRoomCode() {
   return rooms.has(code) ? generateRoomCode() : code;
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  if (ws._socket) ws._socket.setNoDelay(true);
+  if (req && req.socket) req.socket.setNoDelay(true);
   ws.on('message', (message, isBinary) => {
     // Relay binary frames directly between Host and Guest
     if (isBinary) {

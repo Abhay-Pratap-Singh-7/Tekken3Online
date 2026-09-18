@@ -44,7 +44,10 @@ requestAnimationFrame(function frameWatcher(now) {
 
 function handleFrameTick(frame) {
   if (!currentRoomId || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: 'frame_tick', frame }));
+  // Send periodic frame sync only once every 4 frames (~15/sec) to avoid socket congestion
+  if (frame % 4 === 0) {
+    ws.send(JSON.stringify({ type: 'frame_tick', frame }));
+  }
   checkLockstepStall();
 }
 
@@ -252,9 +255,9 @@ function startPing() {
   stopPing();
   pingInterval = setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+      ws.send(JSON.stringify({ type: 'ping', timestamp: performance.now() }));
     }
-  }, 2000);
+  }, 1000);
 }
 
 function stopPing() {
@@ -345,9 +348,11 @@ function handleWsMessage(msg) {
       p2Name.style.color = 'var(--accent-cyan)';
       pingBadge.style.display = 'flex';
       enterAutoFullscreen();
-      // Transmit initial memory state to guest for lockstep sync
-      if (isHost && nostalgistInstance) {
-        setTimeout(sendSavestateToGuest, 600);
+      // Start game locally on Host if not already running, then transmit initial state
+      if (!nostalgistInstance) {
+        launchGame(true);
+      } else {
+        setTimeout(sendSavestateToGuest, 500);
       }
       break;
 
@@ -418,7 +423,7 @@ function handleWsMessage(msg) {
       break;
 
     case 'pong':
-      const rtt = Date.now() - msg.timestamp;
+      const rtt = Math.round(performance.now() - msg.timestamp);
       pingVal.textContent = `${rtt} ms`;
       break;
 
@@ -588,7 +593,7 @@ function setupKeyboardListeners() {
     const btn = KEYBOARD_MAP[e.code];
     if (!btn) return;
 
-    e.preventDefault();
+    if (e.isTrusted) e.preventDefault();
     if (!activeKeyboardButtons.has(btn)) {
       activeKeyboardButtons.add(btn);
       handleControllerInput(btn, 'down');
@@ -600,12 +605,21 @@ function setupKeyboardListeners() {
     const btn = KEYBOARD_MAP[e.code];
     if (!btn) return;
 
-    e.preventDefault();
+    if (e.isTrusted) e.preventDefault();
     if (activeKeyboardButtons.has(btn)) {
       activeKeyboardButtons.delete(btn);
       handleControllerInput(btn, 'up');
     }
   });
+
+  if (canvas) {
+    canvas.addEventListener('keydown', (e) => {
+      if (e.isTrusted) e.preventDefault();
+    });
+    canvas.addEventListener('keyup', (e) => {
+      if (e.isTrusted) e.preventDefault();
+    });
+  }
 }
 
 // ==========================================
@@ -873,36 +887,37 @@ async function startEmulator(rom, bios) {
       input_player1_analog_dpad_mode: 1,
       input_player2_analog_dpad_mode: 1,
 
-      // Unbind RetroArch default keyboard listeners so our unified JS handler controls inputs cleanly
-      input_player1_up: 'nul',
-      input_player1_down: 'nul',
-      input_player1_left: 'nul',
-      input_player1_right: 'nul',
-      input_player1_y: 'nul',
-      input_player1_x: 'nul',
-      input_player1_b: 'nul',
-      input_player1_a: 'nul',
-      input_player1_l: 'nul',
-      input_player1_r: 'nul',
-      input_player1_l2: 'nul',
-      input_player1_r2: 'nul',
-      input_player1_start: 'nul',
-      input_player1_select: 'nul',
+      // Player 1 controls (standard layout for Nostalgist to dispatch)
+      input_player1_up: 'up',
+      input_player1_down: 'down',
+      input_player1_left: 'left',
+      input_player1_right: 'right',
+      input_player1_y: 'a',           // Square (LP) -> KeyA
+      input_player1_x: 's',           // Triangle (RP) -> KeyS
+      input_player1_b: 'z',           // Cross (LK) -> KeyZ
+      input_player1_a: 'x',           // Circle (RK) -> KeyX
+      input_player1_l: 'q',           // L1 -> KeyQ
+      input_player1_r: 'w',           // R1 -> KeyW
+      input_player1_l2: 'e',          // L2 -> KeyE
+      input_player1_r2: 'r',          // R2 -> KeyR
+      input_player1_start: 'enter',   // Start -> Enter
+      input_player1_select: 'rshift', // Select -> ShiftRight
 
-      input_player2_up: 'nul',
-      input_player2_down: 'nul',
-      input_player2_left: 'nul',
-      input_player2_right: 'nul',
-      input_player2_y: 'nul',
-      input_player2_x: 'nul',
-      input_player2_b: 'nul',
-      input_player2_a: 'nul',
-      input_player2_l: 'nul',
-      input_player2_r: 'nul',
-      input_player2_l2: 'nul',
-      input_player2_r2: 'nul',
-      input_player2_start: 'nul',
-      input_player2_select: 'nul'
+      // Distinct Player 2 controls (so Player 2 inputs don't collide with Player 1)
+      input_player2_up: 'num8',       // Numpad8
+      input_player2_down: 'num2',     // Numpad2
+      input_player2_left: 'num4',     // Numpad4
+      input_player2_right: 'num6',    // Numpad6
+      input_player2_y: 'u',           // Square (LP) -> KeyU
+      input_player2_x: 'i',           // Triangle (RP) -> KeyI
+      input_player2_b: 'j',           // Cross (LK) -> KeyJ
+      input_player2_a: 'k',           // Circle (RK) -> KeyK
+      input_player2_l: 'o',           // L1 -> KeyO
+      input_player2_r: 'p',           // R1 -> KeyP
+      input_player2_l2: 'l',          // L2 -> KeyL
+      input_player2_r2: 'm',          // R2 -> KeyM
+      input_player2_start: 'num1',    // Start -> Numpad1
+      input_player2_select: 'num0'    // Select -> Numpad0
     },
     retroarchCoreConfig: {
       pcsx_rearmed_spu_interpolation: 'simple',

@@ -3,7 +3,7 @@ let nostalgistInstance = null;
 let isPaused = false;
 let detectedRomInfo = null;
 
-// Netplay State
+// Netplay & Lockstep State
 let ws = null;
 let isHost = false;
 let isGuest = false;
@@ -11,6 +11,71 @@ let currentRoomId = null;
 let hasGuestConnected = false;
 let pingInterval = null;
 let pendingSyncState = null;
+
+// Lockstep Dynamic Stalling State
+let localFrameCount = 0;
+let lastRemoteFrame = 0;
+let isLockstepStalled = false;
+let stallWatchdog = null;
+let frameDrawnThisTick = false;
+
+window.__onEmulatorFrameRender = function() {
+  if (!frameDrawnThisTick) {
+    frameDrawnThisTick = true;
+    localFrameCount++;
+    handleFrameTick(localFrameCount);
+    requestAnimationFrame(() => {
+      frameDrawnThisTick = false;
+    });
+  }
+};
+
+let lastRenderCheckTime = performance.now();
+requestAnimationFrame(function frameWatcher(now) {
+  if (nostalgistInstance && !isLockstepStalled && (now - lastRenderCheckTime >= 33.3)) {
+    lastRenderCheckTime = now;
+    if (!frameDrawnThisTick) {
+      localFrameCount++;
+      handleFrameTick(localFrameCount);
+    }
+  }
+  requestAnimationFrame(frameWatcher);
+});
+
+function handleFrameTick(frame) {
+  if (!currentRoomId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'frame_tick', frame }));
+  checkLockstepStall();
+}
+
+function checkLockstepStall() {
+  if (!currentRoomId || (!hasGuestConnected && !isGuest)) return;
+  if (!nostalgistInstance) return;
+
+  const frameLead = localFrameCount - lastRemoteFrame;
+  const MAX_ALLOWED_LEAD = 2; // Weakest link principle: allow at most 2 frames lead
+
+  if (frameLead > MAX_ALLOWED_LEAD) {
+    if (!isLockstepStalled) {
+      isLockstepStalled = true;
+      nostalgistInstance.pause();
+
+      clearTimeout(stallWatchdog);
+      stallWatchdog = setTimeout(() => {
+        if (isLockstepStalled && nostalgistInstance) {
+          isLockstepStalled = false;
+          nostalgistInstance.resume();
+        }
+      }, 150);
+    }
+  } else {
+    if (isLockstepStalled) {
+      isLockstepStalled = false;
+      clearTimeout(stallWatchdog);
+      nostalgistInstance.resume();
+    }
+  }
+}
 
 // PS1 Controller Mapping for Keyboard (Unified)
 const KEYBOARD_MAP = {
@@ -137,13 +202,14 @@ function handleControllerInput(button, action) {
     }
   }
 
-  // 2. Transmit button packet over WebSocket to peer (ultra-lightweight, ~10 bytes)
+  // 2. Transmit button packet over WebSocket to peer (with frame index)
   if (ws && ws.readyState === WebSocket.OPEN && currentRoomId) {
     ws.send(JSON.stringify({
       type: 'input',
       player: myPlayer,
       button,
-      action
+      action,
+      frame: localFrameCount
     }));
   }
 }
@@ -262,6 +328,9 @@ function handleWsMessage(msg) {
       setRoomCode(msg.roomId);
       isHost = true;
       isGuest = false;
+      localFrameCount = 0;
+      lastRemoteFrame = 0;
+      isLockstepStalled = false;
       p1Name.textContent = 'Host (You)';
       p2Name.textContent = 'Waiting...';
       matchHud.style.display = 'flex';
@@ -269,6 +338,9 @@ function handleWsMessage(msg) {
 
     case 'guest_connected':
       hasGuestConnected = true;
+      localFrameCount = 0;
+      lastRemoteFrame = 0;
+      isLockstepStalled = false;
       p2Name.textContent = 'P2 (Connected)';
       p2Name.style.color = 'var(--accent-cyan)';
       pingBadge.style.display = 'flex';
@@ -283,6 +355,9 @@ function handleWsMessage(msg) {
       setRoomCode(msg.roomId);
       isHost = false;
       isGuest = true;
+      localFrameCount = 0;
+      lastRemoteFrame = 0;
+      isLockstepStalled = false;
       enterAutoFullscreen();
       matchHud.style.display = 'flex';
       p1Name.textContent = 'Host (P1)';
@@ -299,6 +374,9 @@ function handleWsMessage(msg) {
         console.log('[Netplay] Received initial savestate from Host, synchronizing...');
         const buffer = base64ToArrayBuffer(msg.state);
         const stateBlob = new Blob([buffer]);
+        localFrameCount = 0;
+        lastRemoteFrame = 0;
+        isLockstepStalled = false;
         if (nostalgistInstance) {
           nostalgistInstance.loadState(stateBlob).then(() => {
             console.log('[Netplay] Local emulator synchronized with Host state!');
@@ -317,7 +395,18 @@ function handleWsMessage(msg) {
       }
       break;
 
+    case 'frame_tick':
+      if (typeof msg.frame === 'number') {
+        lastRemoteFrame = Math.max(lastRemoteFrame, msg.frame);
+        checkLockstepStall();
+      }
+      break;
+
     case 'input':
+      if (typeof msg.frame === 'number') {
+        lastRemoteFrame = Math.max(lastRemoteFrame, msg.frame);
+        checkLockstepStall();
+      }
       // Apply remote player's button press on local emulator engine
       if (nostalgistInstance && msg.player && msg.button) {
         if (msg.action === 'down') {
@@ -764,15 +853,23 @@ async function startEmulator(rom, bios) {
     rom: rom,
     retroarchConfig: {
       audio_enable: true,
-      audio_sync: false,
+      audio_sync: true,               // Hardware SPU audio clock governor (pins fast phones to native speed)
       audio_latency: 64,
+      audio_rate_control: true,
+      audio_rate_control_delta: 0.005,
+      audio_max_timing_skew: 0.05,
+
       video_vsync: true,
-      video_swap_interval: 2,
-      video_refresh_rate: 30.0,
-      video_target_refresh_rate: 30.0,
+      video_swap_interval: 1,
+      video_refresh_rate: 60.0,
+      video_target_refresh_rate: 60.0,
       video_smooth: false,
-      video_threaded: true,
+      video_threaded: true,           // Decouples game logic engine from screen rendering
+      video_max_swapchain_images: 2,
       fps_update_interval: 30,
+      fastforward_ratio: 1.0,         // Strict 1.0x speed governor (no hyper-speedup on 120Hz displays)
+      vrr_runloop_enable: false,
+
       input_player1_analog_dpad_mode: 1,
       input_player2_analog_dpad_mode: 1,
 
@@ -810,7 +907,7 @@ async function startEmulator(rom, bios) {
     retroarchCoreConfig: {
       pcsx_rearmed_spu_interpolation: 'simple',
       pcsx_rearmed_dithering: 'disabled',
-      pcsx_rearmed_frameskip: '1'
+      pcsx_rearmed_frameskip: 'auto'  // Local screen rendering skips frames if GPU drops, without affecting core math
     }
   };
 

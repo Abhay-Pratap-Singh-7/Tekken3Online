@@ -307,6 +307,21 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      // 4b. Frame Tick Sync for Lockstep Dynamic Stalling (Bidirectional)
+      if (data.type === 'frame_tick') {
+        if (!ws.roomId) return;
+        const room = rooms.get(ws.roomId);
+        if (!room) return;
+        const target = ws.isHost ? room.guest : room.host;
+        if (target && target.readyState === 1) {
+          target.send(JSON.stringify({
+            type: 'frame_tick',
+            frame: data.frame
+          }));
+        }
+        return;
+      }
+
       // 5. Savestate Handshake Sync (Host -> Guest)
       if (data.type === 'sync_state') {
         if (!ws.roomId) return;

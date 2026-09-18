@@ -17,7 +17,24 @@
         attributes.powerPreference = 'high-performance';
         attributes.antialias = false;
       }
-      return _origGetContext.call(this, type, attributes);
+      const ctx = _origGetContext.call(this, type, attributes);
+      if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {
+        const origDrawArrays = ctx.drawArrays;
+        if (origDrawArrays) {
+          ctx.drawArrays = function(...args) {
+            if (window.__onEmulatorFrameRender) window.__onEmulatorFrameRender();
+            return origDrawArrays.apply(this, args);
+          };
+        }
+        const origDrawElements = ctx.drawElements;
+        if (origDrawElements) {
+          ctx.drawElements = function(...args) {
+            if (window.__onEmulatorFrameRender) window.__onEmulatorFrameRender();
+            return origDrawElements.apply(this, args);
+          };
+        }
+      }
+      return ctx;
     };
   </script>
 </head>

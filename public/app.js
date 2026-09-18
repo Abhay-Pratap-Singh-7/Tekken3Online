@@ -1,4 +1,4 @@
-// Tekken 3 Web Emulator - Netplay, Local & Mobile Touch Controller
+// Tekken 3 Web Emulator - Lockstep Input Netplay & Local Rendering
 let nostalgistInstance = null;
 let isPaused = false;
 let detectedRomInfo = null;
@@ -8,21 +8,13 @@ let ws = null;
 let isHost = false;
 let isGuest = false;
 let currentRoomId = null;
-let peerConnection = null;
 let hasGuestConnected = false;
-let frameStreamLoopActive = false;
 let pingInterval = null;
-let iceCandidatesQueue = [];
+let pendingSyncState = null;
 
-const RTC_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
-};
-
-// Player 2 keyboard mappings
-const GUEST_DEFAULT_MAP = {
+// PS1 Controller Mapping for Keyboard (Unified)
+const KEYBOARD_MAP = {
+  // D-Pad / Movement (Arrow keys or WASD)
   'ArrowUp': 'up',
   'KeyW': 'up',
   'ArrowDown': 'down',
@@ -31,16 +23,39 @@ const GUEST_DEFAULT_MAP = {
   'KeyA': 'left',
   'ArrowRight': 'right',
   'KeyD': 'right',
-  'KeyJ': 'y',       // Square (1 - LP)
-  'KeyU': 'y',       
-  'KeyI': 'x',       // Triangle (2 - RP)
-  'KeyK': 'b',       // Cross (3 - LK)
-  'KeyL': 'a',       // Circle (4 - RK)
-  'KeyO': 'l',       // L1
-  'KeyP': 'r',       // R1
+
+  // Tekken 4 Action Buttons
+  // Square: Left Punch (LP)
+  'KeyJ': 'y',
+  'KeyU': 'y',
+  'Numpad4': 'y',
+
+  // Triangle: Right Punch (RP)
+  'KeyI': 'x',
+  'Numpad5': 'x',
+
+  // Cross: Left Kick (LK)
+  'KeyK': 'b',
+  'KeyZ': 'b',
+  'Numpad1': 'b',
+
+  // Circle: Right Kick (RK)
+  'KeyL': 'a',
+  'KeyX': 'a',
+  'Numpad2': 'a',
+
+  // Shoulder buttons
+  'KeyQ': 'l',
+  'KeyO': 'l',
+  'KeyE': 'r',
+  'KeyP': 'r',
+
+  // Meta buttons
   'Enter': 'start',
+  'Space': 'start',
   'ShiftRight': 'select',
-  'ShiftLeft': 'select'
+  'ShiftLeft': 'select',
+  'Backspace': 'select'
 };
 
 // DOM Elements
@@ -54,13 +69,9 @@ const btnHostMatch = document.getElementById('btnHostMatch');
 const screenOverlay = document.getElementById('screenOverlay');
 const screenFrame = document.getElementById('screenFrame');
 const canvas = document.getElementById('emulator-canvas');
-const guestCanvas = document.getElementById('guest-canvas');
-const guestVideo = document.getElementById('guest-video');
 const gameHud = document.getElementById('gameHud');
 const touchOverlay = document.getElementById('touchOverlay');
 const btnTouchToggle = document.getElementById('btnTouchToggle');
-
-const guestCtx = guestCanvas ? guestCanvas.getContext('2d') : null;
 
 // Multiplayer DOM Elements
 const topRoomBar = document.getElementById('topRoomBar');
@@ -88,14 +99,63 @@ const btnLoadState = document.getElementById('btnLoadState');
 const btnFullscreen = document.getElementById('btnFullscreen');
 
 // ==========================================
-// 1. WEBSOCKET CLIENT
+// 1. BASE64 BINARY CONVERSION HELPERS
+// ==========================================
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  const chunkSize = 0x8000; // 32KB chunks
+  for (let i = 0; i < len; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunkSize, len)));
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+// ==========================================
+// 2. CONTROLLER INPUT DISPATCHER (LOCAL + NETPLAY)
+// ==========================================
+function handleControllerInput(button, action) {
+  const myPlayer = isGuest ? 2 : 1;
+
+  // 1. Execute locally on this device's emulator
+  if (nostalgistInstance) {
+    if (action === 'down') {
+      nostalgistInstance.pressDown(button, myPlayer);
+    } else {
+      nostalgistInstance.pressUp(button, myPlayer);
+    }
+  }
+
+  // 2. Transmit button packet over WebSocket to peer (ultra-lightweight, ~10 bytes)
+  if (ws && ws.readyState === WebSocket.OPEN && currentRoomId) {
+    ws.send(JSON.stringify({
+      type: 'input',
+      player: myPlayer,
+      button,
+      action
+    }));
+  }
+}
+
+// ==========================================
+// 3. WEBSOCKET NETPLAY CLIENT
 // ==========================================
 function initWebSocket() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${location.host}`;
 
   ws = new WebSocket(wsUrl);
-  ws.binaryType = 'blob';
 
   ws.onopen = () => {
     startPing();
@@ -108,31 +168,6 @@ function initWebSocket() {
   };
 
   ws.onmessage = (e) => {
-    // Binary Live Frame Relay (Direct Canvas over WS)
-    if (e.data instanceof Blob || e.data instanceof ArrayBuffer) {
-      if (isGuest && guestCanvas && guestCtx) {
-        // If WebRTC video is actively playing real video frames, skip canvas draw
-        if (guestVideo && guestVideo.style.display === 'block' && guestVideo.videoWidth > 0 && !guestVideo.paused) {
-          return;
-        }
-
-        const blob = e.data instanceof Blob ? e.data : new Blob([e.data], { type: 'image/jpeg' });
-        createImageBitmap(blob).then(bmp => {
-          if (guestCanvas.width !== bmp.width || guestCanvas.height !== bmp.height) {
-            guestCanvas.width = bmp.width;
-            guestCanvas.height = bmp.height;
-          }
-          guestCtx.drawImage(bmp, 0, 0);
-          bmp.close();
-
-          screenOverlay.classList.add('hidden');
-          canvas.style.display = 'none';
-          guestCanvas.style.display = 'block';
-        }).catch(() => {});
-      }
-      return;
-    }
-
     try {
       const data = JSON.parse(e.data);
       handleWsMessage(data);
@@ -153,7 +188,7 @@ function startPing() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
     }
-  }, 2500);
+  }, 2000);
 }
 
 function stopPing() {
@@ -201,6 +236,26 @@ function setRoomCode(roomId) {
   if (matchHud) matchHud.style.display = 'flex';
 }
 
+async function sendSavestateToGuest() {
+  if (!nostalgistInstance || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    console.log('[Netplay] Creating initial synchronization state snapshot...');
+    const result = await nostalgistInstance.saveState();
+    if (!result || !result.state) return;
+
+    const arrayBuffer = await result.state.arrayBuffer();
+    const base64State = arrayBufferToBase64(arrayBuffer);
+
+    ws.send(JSON.stringify({
+      type: 'sync_state',
+      state: base64State
+    }));
+    console.log('[Netplay] Synchronized state snapshot transmitted to Guest');
+  } catch (err) {
+    console.warn('[Netplay] Failed to capture sync state:', err);
+  }
+}
+
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'room_created':
@@ -218,9 +273,9 @@ function handleWsMessage(msg) {
       p2Name.style.color = 'var(--accent-cyan)';
       pingBadge.style.display = 'flex';
       enterAutoFullscreen();
+      // Transmit initial memory state to guest for lockstep sync
       if (isHost && nostalgistInstance) {
-        startHostFrameStreaming();
-        startWebRtcAsHost();
+        setTimeout(sendSavestateToGuest, 600);
       }
       break;
 
@@ -229,28 +284,46 @@ function handleWsMessage(msg) {
       isHost = false;
       isGuest = true;
       enterAutoFullscreen();
-      screenOverlay.classList.add('hidden');
-      canvas.style.display = 'none';
-      guestCanvas.style.display = 'block';
-      gameHud.style.display = 'flex';
       matchHud.style.display = 'flex';
       p1Name.textContent = 'Host (P1)';
       p2Name.textContent = 'You (P2)';
       pingBadge.style.display = 'flex';
-      setupGuestKeyboardListeners();
-      initWebRtcAsGuest();
+      // Automatically launch local emulator instance for Guest
+      if (!nostalgistInstance) {
+        launchGame(false);
+      }
       break;
 
-    case 'signal':
-      handleWebRtcSignal(msg.data);
-      break;
-
-    case 'remote_input':
-      if (isHost && nostalgistInstance) {
-        if (msg.action === 'down') {
-          nostalgistInstance.pressDown(msg.button, 2);
+    case 'sync_state':
+      try {
+        console.log('[Netplay] Received initial savestate from Host, synchronizing...');
+        const buffer = base64ToArrayBuffer(msg.state);
+        const stateBlob = new Blob([buffer]);
+        if (nostalgistInstance) {
+          nostalgistInstance.loadState(stateBlob).then(() => {
+            console.log('[Netplay] Local emulator synchronized with Host state!');
+          }).catch(err => console.error('[Netplay] loadState error:', err));
         } else {
-          nostalgistInstance.pressUp(msg.button, 2);
+          pendingSyncState = stateBlob;
+        }
+      } catch (err) {
+        console.error('[Netplay] Sync state decode error:', err);
+      }
+      break;
+
+    case 'request_sync':
+      if (isHost && nostalgistInstance) {
+        sendSavestateToGuest();
+      }
+      break;
+
+    case 'input':
+      // Apply remote player's button press on local emulator engine
+      if (nostalgistInstance && msg.player && msg.button) {
+        if (msg.action === 'down') {
+          nostalgistInstance.pressDown(msg.button, msg.player);
+        } else {
+          nostalgistInstance.pressUp(msg.button, msg.player);
         }
       }
       break;
@@ -265,7 +338,6 @@ function handleWsMessage(msg) {
         p2Name.textContent = 'Disconnected';
         p2Name.style.color = '#ff3344';
         hasGuestConnected = false;
-        frameStreamLoopActive = false;
       } else {
         alert(msg.message || 'Host disconnected.');
         location.href = '/';
@@ -279,141 +351,11 @@ function handleWsMessage(msg) {
 }
 
 // ==========================================
-// 2. SCREEN STREAMING (WEBRTC + WS FALLBACK)
-// ==========================================
-function startHostFrameStreaming() {
-  if (frameStreamLoopActive) return;
-  frameStreamLoopActive = true;
-
-  let inFlight = false;
-  let lastFrameTime = 0;
-  const targetFrameInterval = 1000 / 30; // 30 FPS cap (~33.3ms)
-
-  function streamLoop(timestamp) {
-    if (!frameStreamLoopActive || !isHost) return;
-
-    const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
-
-    if (timestamp - lastFrameTime >= targetFrameInterval) {
-      if (!inFlight && ws && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 131072 && activeCanvas && activeCanvas.width > 0) {
-        inFlight = true;
-        lastFrameTime = timestamp;
-        activeCanvas.toBlob((blob) => {
-          inFlight = false;
-          if (blob && blob.size > 0 && ws && ws.readyState === WebSocket.OPEN && frameStreamLoopActive) {
-            ws.send(blob);
-          }
-        }, 'image/jpeg', 0.65);
-      }
-    }
-
-    requestAnimationFrame(streamLoop);
-  }
-
-  requestAnimationFrame(streamLoop);
-}
-
-async function startWebRtcAsHost() {
-  if (peerConnection) peerConnection.close();
-  iceCandidatesQueue = [];
-  peerConnection = new RTCPeerConnection(RTC_CONFIG);
-
-  peerConnection.onicecandidate = (e) => {
-    if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } }));
-    }
-  };
-
-  try {
-    const activeCanvas = (nostalgistInstance && nostalgistInstance.getCanvas && nostalgistInstance.getCanvas()) || canvas;
-    const canvasStream = activeCanvas.captureStream(30); // 30 FPS cap
-    canvasStream.getVideoTracks().forEach(track => {
-      const sender = peerConnection.addTrack(track, canvasStream);
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings) params.encodings = [{}];
-        params.encodings[0].maxBitrate = 1800000;
-        params.encodings[0].maxFramerate = 30; // 30 FPS cap
-        sender.setParameters(params).catch(() => {});
-      } catch (e) {}
-    });
-
-    if (window.__capturedAudioStreams && window.__capturedAudioStreams.length > 0) {
-      const audioStream = window.__capturedAudioStreams[0];
-      audioStream.getAudioTracks().forEach(track => {
-        peerConnection.addTrack(track, audioStream);
-      });
-    }
-
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: 'signal', data: { sdp: peerConnection.localDescription } }));
-  } catch (err) {
-    console.warn('WebRTC Host init:', err);
-  }
-}
-
-function initWebRtcAsGuest() {
-  if (peerConnection) peerConnection.close();
-  iceCandidatesQueue = [];
-  peerConnection = new RTCPeerConnection(RTC_CONFIG);
-
-  peerConnection.onicecandidate = (e) => {
-    if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } }));
-    }
-  };
-
-  peerConnection.ontrack = (e) => {
-    if (e.streams && e.streams[0]) {
-      guestVideo.srcObject = e.streams[0];
-      guestVideo.onloadedmetadata = () => {
-        guestVideo.play().then(() => {
-          if (guestVideo.videoWidth > 0 && guestVideo.videoHeight > 0) {
-            guestVideo.style.display = 'block';
-            guestCanvas.style.display = 'none';
-          }
-        }).catch(() => {});
-      };
-    }
-  };
-}
-
-async function handleWebRtcSignal(data) {
-  if (!peerConnection) return;
-
-  if (data.sdp) {
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    for (const cand of iceCandidatesQueue) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
-      } catch (e) {}
-    }
-    iceCandidatesQueue = [];
-
-    if (data.sdp.type === 'offer') {
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: 'signal', data: { sdp: peerConnection.localDescription } }));
-    }
-  } else if (data.candidate) {
-    if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } catch (e) {}
-    } else {
-      iceCandidatesQueue.push(data.candidate);
-    }
-  }
-}
-
-// ==========================================
-// 3. TOUCH & KEYBOARD INPUTS
+// 4. TOUCH CONTROLS OVERLAY
 // ==========================================
 function setupTouchOverlay() {
   if (!touchOverlay) return;
 
-  // Auto-hide touch buttons on desktop without touch
   const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
   if (!isTouchDevice && window.innerWidth > 1024) {
     touchOverlay.classList.add('touch-hidden');
@@ -430,20 +372,6 @@ function setupTouchOverlay() {
 
   let activeRetroButtons = new Set();
   let activeElementButtons = new Set();
-
-  function triggerButtonAction(btn, action) {
-    if (isGuest) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', action, button: btn }));
-      }
-    } else if (nostalgistInstance) {
-      if (action === 'down') {
-        nostalgistInstance.pressDown(btn, 1);
-      } else {
-        nostalgistInstance.pressUp(btn, 1);
-      }
-    }
-  }
 
   function updateTouchPoints(e) {
     e.preventDefault();
@@ -467,18 +395,18 @@ function setupTouchOverlay() {
     // Newly pressed buttons
     for (const btn of newActiveButtons) {
       if (!activeRetroButtons.has(btn)) {
-        triggerButtonAction(btn, 'down');
+        handleControllerInput(btn, 'down');
       }
     }
 
     // Released buttons
     for (const btn of activeRetroButtons) {
       if (!newActiveButtons.has(btn)) {
-        triggerButtonAction(btn, 'up');
+        handleControllerInput(btn, 'up');
       }
     }
 
-    // Update visual active classes
+    // Update active visual classes & haptic feedback
     for (const el of activeElementButtons) {
       if (!newActiveElements.has(el)) {
         el.classList.remove('active');
@@ -489,7 +417,7 @@ function setupTouchOverlay() {
       if (!activeElementButtons.has(el)) {
         el.classList.add('active');
         if (navigator.vibrate) {
-          try { navigator.vibrate(10); } catch(err) {}
+          try { navigator.vibrate(8); } catch(err) {}
         }
       }
     }
@@ -498,7 +426,6 @@ function setupTouchOverlay() {
     activeElementButtons = newActiveElements;
   }
 
-  // Handle touch drag across buttons
   touchOverlay.addEventListener('touchstart', (e) => {
     enterAutoFullscreen();
     updateTouchPoints(e);
@@ -524,10 +451,10 @@ function setupTouchOverlay() {
     }
 
     for (const b of newActiveButtons) {
-      if (!activeRetroButtons.has(b)) triggerButtonAction(b, 'down');
+      if (!activeRetroButtons.has(b)) handleControllerInput(b, 'down');
     }
     for (const b of activeRetroButtons) {
-      if (!newActiveButtons.has(b)) triggerButtonAction(b, 'up');
+      if (!newActiveButtons.has(b)) handleControllerInput(b, 'up');
     }
 
     for (const el of activeElementButtons) {
@@ -553,7 +480,7 @@ function setupTouchOverlay() {
   window.addEventListener('mouseup', () => {
     if (isMouseDown) {
       isMouseDown = false;
-      for (const btn of activeRetroButtons) triggerButtonAction(btn, 'up');
+      for (const btn of activeRetroButtons) handleControllerInput(btn, 'up');
       for (const el of activeElementButtons) el.classList.remove('active');
       activeRetroButtons.clear();
       activeElementButtons.clear();
@@ -561,33 +488,39 @@ function setupTouchOverlay() {
   });
 }
 
-function setupGuestKeyboardListeners() {
-  const pressed = new Set();
-  window.addEventListener('keydown', (e) => {
-    if (!isGuest || !ws || ws.readyState !== WebSocket.OPEN) return;
-    if (guestVideo && guestVideo.muted) guestVideo.muted = false;
+// ==========================================
+// 5. KEYBOARD CONTROLLER LISTENERS
+// ==========================================
+const activeKeyboardButtons = new Set();
 
-    const btn = GUEST_DEFAULT_MAP[e.code];
-    if (btn && !pressed.has(btn)) {
-      pressed.add(btn);
-      ws.send(JSON.stringify({ type: 'input', action: 'down', button: btn }));
-      e.preventDefault();
+function setupKeyboardListeners() {
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    const btn = KEYBOARD_MAP[e.code];
+    if (!btn) return;
+
+    e.preventDefault();
+    if (!activeKeyboardButtons.has(btn)) {
+      activeKeyboardButtons.add(btn);
+      handleControllerInput(btn, 'down');
     }
   });
 
   window.addEventListener('keyup', (e) => {
-    if (!isGuest || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const btn = GUEST_DEFAULT_MAP[e.code];
-    if (btn) {
-      pressed.delete(btn);
-      ws.send(JSON.stringify({ type: 'input', action: 'up', button: btn }));
-      e.preventDefault();
+    if (e.target.tagName === 'INPUT') return;
+    const btn = KEYBOARD_MAP[e.code];
+    if (!btn) return;
+
+    e.preventDefault();
+    if (activeKeyboardButtons.has(btn)) {
+      activeKeyboardButtons.delete(btn);
+      handleControllerInput(btn, 'up');
     }
   });
 }
 
 // ==========================================
-// 4. CLIENT-SIDE LOCAL STORAGE (IndexedDB)
+// 6. CLIENT-SIDE LOCAL STORAGE (IndexedDB)
 // ==========================================
 const IDB_NAME = 'tekken3_local_cache';
 const IDB_VERSION = 1;
@@ -643,7 +576,7 @@ async function saveStoredAsset(key, data) {
 }
 
 // ==========================================
-// 5. ROM & EMULATOR INITIALIZATION
+// 7. ROM & EMULATOR INITIALIZATION
 // ==========================================
 async function checkRomStatus() {
   try {
@@ -801,7 +734,7 @@ async function launchGame(asHost = false) {
       requestHostRoom();
     }
 
-    progressStepText.textContent = 'Booting...';
+    progressStepText.textContent = 'Booting emulator...';
     progressBarFill.style.width = '100%';
 
     await startEmulator(romFiles, biosFiles);
@@ -822,8 +755,6 @@ async function startEmulator(rom, bios) {
   screenOverlay.classList.add('hidden');
   gameHud.style.display = 'flex';
   canvas.style.display = 'block';
-  if (guestCanvas) guestCanvas.style.display = 'none';
-  if (guestVideo) guestVideo.style.display = 'none';
 
   const launchOptions = {
     element: canvas,
@@ -845,20 +776,36 @@ async function startEmulator(rom, bios) {
       input_player1_analog_dpad_mode: 1,
       input_player2_analog_dpad_mode: 1,
 
-      input_player2_up: 'num8',
-      input_player2_down: 'num2',
-      input_player2_left: 'num4',
-      input_player2_right: 'num6',
-      input_player2_y: 'u',       // Square (LP)
-      input_player2_x: 'i',       // Triangle (RP)
-      input_player2_b: 'j',       // Cross (LK)
-      input_player2_a: 'k',       // Circle (RK)
-      input_player2_l: 'o',       // L1
-      input_player2_r: 'p',       // R1
-      input_player2_l2: 'l',      // L2
-      input_player2_r2: 'm',      // R2
-      input_player2_start: 'num1',
-      input_player2_select: 'num0'
+      // Unbind RetroArch default keyboard listeners so our unified JS handler controls inputs cleanly
+      input_player1_up: 'nul',
+      input_player1_down: 'nul',
+      input_player1_left: 'nul',
+      input_player1_right: 'nul',
+      input_player1_y: 'nul',
+      input_player1_x: 'nul',
+      input_player1_b: 'nul',
+      input_player1_a: 'nul',
+      input_player1_l: 'nul',
+      input_player1_r: 'nul',
+      input_player1_l2: 'nul',
+      input_player1_r2: 'nul',
+      input_player1_start: 'nul',
+      input_player1_select: 'nul',
+
+      input_player2_up: 'nul',
+      input_player2_down: 'nul',
+      input_player2_left: 'nul',
+      input_player2_right: 'nul',
+      input_player2_y: 'nul',
+      input_player2_x: 'nul',
+      input_player2_b: 'nul',
+      input_player2_a: 'nul',
+      input_player2_l: 'nul',
+      input_player2_r: 'nul',
+      input_player2_l2: 'nul',
+      input_player2_r2: 'nul',
+      input_player2_start: 'nul',
+      input_player2_select: 'nul'
     },
     retroarchCoreConfig: {
       pcsx_rearmed_spu_interpolation: 'simple',
@@ -876,9 +823,26 @@ async function startEmulator(rom, bios) {
   isPaused = false;
   btnPause.textContent = '⏸ Pause';
 
+  // Apply queued initial state snapshot if guest joined before launch finished
+  if (pendingSyncState) {
+    try {
+      console.log('[Netplay] Applying queued sync state from host...');
+      await nostalgistInstance.loadState(pendingSyncState);
+      pendingSyncState = null;
+      console.log('[Netplay] Queued state successfully applied!');
+    } catch (err) {
+      console.error('[Netplay] Error applying queued sync state:', err);
+    }
+  }
+
+  // If Guest finished booting and connected to a room, request a state sync from Host
+  if (isGuest && ws && ws.readyState === WebSocket.OPEN && currentRoomId) {
+    ws.send(JSON.stringify({ type: 'request_sync' }));
+  }
+
+  // If Host and Guest is already waiting, send state snapshot
   if (isHost && hasGuestConnected) {
-    startHostFrameStreaming();
-    startWebRtcAsHost();
+    setTimeout(sendSavestateToGuest, 800);
   }
 }
 
@@ -900,7 +864,7 @@ function requestLandscapeOrientation() {
 }
 
 // ==========================================
-// 5. EVENT LISTENERS
+// 8. EVENT LISTENERS
 // ==========================================
 btnLaunchDetected.addEventListener('click', () => {
   enterAutoFullscreen();
@@ -1019,4 +983,5 @@ window.addEventListener('DOMContentLoaded', () => {
   initWebSocket();
   checkRomStatus();
   setupTouchOverlay();
+  setupKeyboardListeners();
 });

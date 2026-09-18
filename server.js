@@ -290,17 +290,44 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // 4. Remote Input (Guest -> Host)
+      // 4. Netplay Input (Bidirectional: Host <-> Guest)
       if (data.type === 'input') {
         if (!ws.roomId) return;
         const room = rooms.get(ws.roomId);
-        if (room && room.host && room.host.readyState === 1) {
-          room.host.send(JSON.stringify({
-            type: 'remote_input',
+        if (!room) return;
+        const target = ws.isHost ? room.guest : room.host;
+        if (target && target.readyState === 1) {
+          target.send(JSON.stringify({
+            type: 'input',
+            player: data.player,
             action: data.action,
             button: data.button
           }));
         }
+        return;
+      }
+
+      // 5. Savestate Handshake Sync (Host -> Guest)
+      if (data.type === 'sync_state') {
+        if (!ws.roomId) return;
+        const room = rooms.get(ws.roomId);
+        if (!room) return;
+        const target = ws.isHost ? room.guest : room.host;
+        if (target && target.readyState === 1) {
+          target.send(JSON.stringify({
+            type: 'sync_state',
+            state: data.state
+          }));
+        }
+        return;
+      }
+
+      // 6. Request Sync (Guest -> Host)
+      if (data.type === 'request_sync') {
+        if (!ws.roomId) return;
+        const room = rooms.get(ws.roomId);
+        if (!room || !room.host || room.host.readyState !== 1) return;
+        room.host.send(JSON.stringify({ type: 'request_sync' }));
         return;
       }
 
